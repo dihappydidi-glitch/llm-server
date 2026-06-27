@@ -79,7 +79,7 @@ Admin endpoints accept `X-API-Key` header (set `ADMIN_API_KEY` env var).
 
 ```
 C:\Users\611marco\llm-server\
-├── server.py              # Main server (FastAPI + proxy)  ← 870 lines
+├── server.py              # Main server (FastAPI + proxy + OpenRouter)  ← ~910 lines
 ├── voice.py               # STT/TTS module
 ├── config.json            # Configuration
 ├── requirements.txt       # Python dependencies
@@ -193,3 +193,38 @@ python server.py
 - [ ] Voice activity detection (VAD) for hands-free
 - [ ] Select TTS voice in Web UI
 - [ ] Push 20+ tok/s via split-layer GPU/CPU
+
+## ✅ Completed: OpenRouter Integration (2026-06-27)
+
+### Backend (`server.py`)
+- **`OPENROUTER_API_KEY`** env var — set `OPENROUTER_API_KEY=sk-or-...` for default config
+- **`OPENROUTER_BASE_URL`** — https://openrouter.ai/api/v1
+- **`get_openrouter_client()`** — lazy-loaded `httpx.AsyncClient` with Bearer auth + app headers
+- **`fetch_openrouter_models()`** — fetches full model list from OpenRouter, cached for 60s
+- **`set_openrouter_key(key)`** — runtime key update (via `/api/openrouter/key` POST)
+- **`/api/openrouter/status`** — check if key is configured and model count
+- **`/api/available-models`** — combined list: `{local: [...], openrouter: [...], openrouter_configured: bool}`
+- **Routing**: `/v1/chat/completions` checks `req.model` — `openrouter/...` prefix → OpenRouter API; otherwise → local llama-server
+- **`_openrouter_chat()`** / **`_openrouter_stream()`** — OpenAI-compatible streaming and non-streaming handlers
+- Cleanup on shutdown in `lifespan()`
+
+### Frontend (`templates/index.html`)
+- **Model selector `<select>`** in settings panel, populated from `/api/available-models`
+  - `🔒 Local` optgroup — local GGUF models with sizes
+  - `☁️ OpenRouter` optgroup — cloud models (appears when key is set)
+- **OpenRouter Key input** — password field + "Set" button, appears when no key configured
+- **`fetchAvailableModels()`** — fetches model list, populates dropdown, persists selection
+- **`setOpenRouterKey()`** — POST to `/api/openrouter/key`, re-fetches models after key set
+- Selected model (`state.selectedModel`) sent as `model` field in every `/v1/chat/completions` request
+- Auto-refresh model list every 60s
+- **`updateStatus()`** — shows selected model name in badge
+
+### Usage
+```bash
+# Via env var (persistent):
+set OPENROUTER_API_KEY=sk-or-v1-...
+python server.py
+
+# Via Web UI (runtime):
+# Click ⚙️ → paste key in "OpenRouter Key" → Set → select model from dropdown
+```

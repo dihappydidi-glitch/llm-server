@@ -76,6 +76,9 @@ LLAMA_SERVER_URL = "http://localhost:8080"
 
 ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY", "")  # empty = no auth required
 
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
 
 @dataclass
 class ServerConfig:
@@ -137,6 +140,78 @@ async def close_client():
     global _http_client
     if _http_client and not _http_client.is_closed:
         await _http_client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter client (cloud LLM API, OpenAI-compatible)
+# ---------------------------------------------------------------------------
+_openrouter_client: Optional[httpx.AsyncClient] = None
+_openrouter_models_cache: dict = {"models": [], "timestamp": 0.0}
+
+
+def get_openrouter_client() -> Optional[httpx.AsyncClient]:
+    global _openrouter_client
+    if not OPENROUTER_API_KEY:
+        return None
+    if _openrouter_client is None or _openrouter_client.is_closed:
+        _openrouter_client = httpx.AsyncClient(
+            base_url=OPENROUTER_BASE_URL,
+            timeout=httpx.Timeout(60.0, connect=10.0),
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "HTTP-Referer": "http://localhost:8443",
+                "X-Title": "LLM Server",
+            },
+            limits=httpx.Limits(max_keepalive_connections=2, max_connections=4),
+        )
+    return _openrouter_client
+
+
+async def close_openrouter_client():
+    global _openrouter_client
+    if _openrouter_client and not _openrouter_client.is_closed:
+        await _openrouter_client.aclose()
+
+
+async def fetch_openrouter_models() -> list:
+    """Fetch available models from OpenRouter, cached for 60s."""
+    global _openrouter_models_cache
+    cache_age = time.time() - _openrouter_models_cache["timestamp"]
+    if _openrouter_models_cache["models"] and cache_age < 60:
+        return _openrouter_models_cache["models"]
+    client = get_openrouter_client()
+    if not client:
+        return []
+    try:
+        r = await client.get("/models")
+        r.raise_for_status()
+        data = r.json().get("data", [])
+        models = []
+        for m in data:
+            models.append({
+                "id": m["id"],
+                "name": m.get("name", m["id"]),
+                "owned_by": m.get("created_by", "openrouter"),
+            })
+        models.sort(key=lambda m: m["id"])
+        _openrouter_models_cache = {"models": models, "timestamp": time.time()}
+        log.info("Fetched %d OpenRouter models", len(models))
+        return models
+    except Exception as e:
+        log.warning("Failed to fetch OpenRouter models: %s", e)
+        return []
+
+
+def set_openrouter_key(key: str):
+    """Set or update OpenRouter API key at runtime."""
+    global OPENROUTER_API_KEY, _openrouter_client, _openrouter_models_cache
+    if not key:
+        return
+    OPENROUTER_API_KEY = key
+    # Force re-creation of client on next request
+    _openrouter_client = None
+    _openrouter_models_cache = {"models": [], "timestamp": 0.0}
+    log.info("OpenRouter API key updated")
 
 
 async def check_llama_server() -> bool:
@@ -301,7 +376,10 @@ def connect_llama_server():
                 if r2.status_code == 200:
                     models = r2.json().get("data", [])
                     if models:
-                        state.model_name = models[0].get("id", "llama-server")
+                        raw_name = models[0].get("id", "llama-server")
+                        # Clean up the model name: strip path, shorten long names
+                        state.model_name = Path(raw_name).stem if "\\" in raw_name or "/" in raw_name else raw_name
+                        state.model_name = re.sub(r"-00001-of-\d{5}$", "", state.model_name)
             except Exception:
                 pass
         c.close()
@@ -314,8 +392,10 @@ def connect_llama_server():
 
     model_path = find_gguf_model(state.config.models_dir)
     if model_path:
-        state.model_name = Path(model_path).stem
-        state.model_name = re.sub(r"-00001-of-\d{5}$", "", state.model_name)
+        # Only set model_name from file scan if /v1/models didn't provide one
+        if state.model_name == "none" or state.model_name == "llama-server":
+            state.model_name = Path(model_path).stem
+            state.model_name = re.sub(r"-00001-of-\d{5}$", "", state.model_name)
         state.model_path = model_path
 
     state.loaded = True
@@ -362,6 +442,7 @@ async def lifespan(app: FastAPI):
     yield
 
     await close_client()
+    await close_openrouter_client()
     log.info("Shutdown complete.")
 
 
@@ -412,7 +493,7 @@ async def favicon():
 async def health():
     llm_ok = await check_llama_server()
     return {
-        "status": "connected" if llm_ok else "disconnected",
+        "status": "ok" if llm_ok else "disconnected",
         "model": state.model_name,
         "loaded": state.loaded,
         "uptime_seconds": int(time.time() - state.start_time) if state.start_time else 0,
@@ -448,6 +529,28 @@ async def list_models():
         models.append({"name": f.stem, "path": str(f), "size_gb": round(f.stat().st_size / 1024 ** 3, 2),
                        "loaded": f == Path(state.model_path) if state.model_path else False})
     return {"models": models}
+
+
+@app.get("/api/available-models")
+async def available_models():
+    """Return combined list of local GGUF models and OpenRouter cloud models."""
+    local_models = []
+    models_dir = Path(state.config.models_dir)
+    if models_dir.exists():
+        for f in sorted(models_dir.rglob("*.gguf")):
+            name = re.sub(r"-00001-of-\d{5}$", "", f.stem)
+            local_models.append({
+                "id": f"local/{name}",
+                "name": name,
+                "owned_by": "local",
+                "size_gb": round(f.stat().st_size / 1024 ** 3, 2),
+            })
+    if not local_models:
+        local_models.append({"id": "local/default", "name": state.model_name or "default", "owned_by": "local"})
+
+    or_models = await fetch_openrouter_models()
+
+    return {"local": local_models, "openrouter": or_models, "openrouter_configured": bool(OPENROUTER_API_KEY)}
 
 
 # ---------------------------------------------------------------------------
@@ -506,14 +609,35 @@ SEARCH_TRIGGERS = [
 
 @app.post("/v1/chat/completions")
 async def chat_completions(req: ChatCompletionRequest):
+    messages = [{"role": m.role, "content": m.content} for m in req.messages]
+    chat_messages = [m for m in messages if m["role"] != "system"]
+    system_prompt = next((m["content"] for m in messages if m["role"] == "system"), "")
+
+    # ---- Route to OpenRouter if model starts with "openrouter/" ----
+    if req.model and req.model.startswith("openrouter/"):
+        state.n_requests += 1
+
+        # Prepend system prompt as a message
+        if system_prompt:
+            chat_messages.insert(0, {"role": "system", "content": system_prompt})
+
+        params = {
+            "max_tokens": req.max_tokens or state.config.default_max_tokens,
+            "temperature": req.temperature if req.temperature is not None else state.config.default_temperature,
+            "top_p": req.top_p if req.top_p is not None else state.config.default_top_p,
+            "top_k": req.top_k or state.config.default_top_k,
+            "repetition_penalty": req.repetition_penalty or state.config.default_repetition_penalty,
+        }
+        if req.stop:
+            params["stop"] = [req.stop] if isinstance(req.stop, str) else req.stop
+
+        return await _openrouter_chat(chat_messages, params, req.model, stream=req.stream)
+
+    # ---- Local model — need llama-server ----
     _ensure_loaded()
     if not state.loaded:
         raise HTTPException(503, "llama-server not running on port 8080")
     state.n_requests += 1
-
-    messages = [{"role": m.role, "content": m.content} for m in req.messages]
-    chat_messages = [m for m in messages if m["role"] != "system"]
-    system_prompt = next((m["content"] for m in messages if m["role"] == "system"), "")
 
     # ---- Web search auto-trigger ----
     search_results = None
@@ -618,6 +742,116 @@ async def _proxy_stream(messages: list, params: dict, raw_text: bool = False):
     if not raw_text:
         yield f"data: {json.dumps({'id': chunk_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
         yield "data: [DONE]\n\n"
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter chat completions
+# ---------------------------------------------------------------------------
+async def _openrouter_chat(messages: list, params: dict, model_id: str, stream: bool = False):
+    """Proxy chat completion through OpenRouter API."""
+    client = get_openrouter_client()
+    if not client:
+        raise HTTPException(502, "OpenRouter API key not configured")
+
+    # Strip "openrouter/" prefix to get actual model ID
+    actual_model = model_id[len("openrouter/"):] if model_id.startswith("openrouter/") else model_id
+
+    payload = {
+        "model": actual_model,
+        "messages": messages,
+        "stream": stream,
+    }
+    for key in ("max_tokens", "temperature", "top_p", "top_k", "repetition_penalty", "stop"):
+        if key in params and params[key] is not None:
+            payload[key] = params[key]
+
+    if stream:
+        return StreamingResponse(
+            _openrouter_stream(payload, model_id),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    try:
+        r = await client.post("/chat/completions", json=payload)
+        r.raise_for_status()
+        result = r.json()
+    except httpx.HTTPStatusError as e:
+        detail = "Unknown OpenRouter error"
+        try:
+            detail = e.response.json().get("error", {}).get("message", str(e))
+        except Exception:
+            detail = str(e)
+        raise HTTPException(e.response.status_code, f"OpenRouter error: {detail}")
+    except httpx.ConnectError:
+        raise HTTPException(503, "Cannot connect to OpenRouter API")
+
+    output = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+    usage = result.get("usage", {})
+
+    return {
+        "id": result.get("id", f"chatcmpl-{int(time.time())}"),
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model_id,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": output}, "finish_reason": "stop"}],
+        "usage": usage or {"prompt_tokens": 0, "completion_tokens": len(output) // 4, "total_tokens": 0},
+    }
+
+
+async def _openrouter_stream(payload: dict, model_id: str):
+    """Stream from OpenRouter SSE, reformatting as OpenAI-compatible chunks."""
+    client = get_openrouter_client()
+    if not client:
+        return
+
+    chunk_id = f"chatcmpl-{int(time.time())}"
+    created = int(time.time())
+
+    yield f"data: {json.dumps({'id': chunk_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model_id, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}]})}\n\n"
+
+    try:
+        async with client.stream("POST", "/chat/completions", json=payload) as response:
+            async for line in response.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data_str = line[6:].strip()
+                if data_str == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data_str)
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    text = delta.get("content", "")
+                    if text:
+                        yield f"data: {json.dumps({'id': chunk_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model_id, 'choices': [{'index': 0, 'delta': {'content': text}, 'finish_reason': None}]})}\n\n"
+                except json.JSONDecodeError:
+                    continue
+    except Exception as e:
+        log.error("OpenRouter stream error: %s", e)
+        yield f"data: {json.dumps({'id': chunk_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model_id, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'error'}]})}\n\n"
+
+    yield f"data: {json.dumps({'id': chunk_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model_id, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
+    yield "data: [DONE]\n\n"
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter API key management
+# ---------------------------------------------------------------------------
+class OpenRouterKeyRequest(BaseModel):
+    key: str
+
+
+@app.post("/api/openrouter/key")
+async def set_openrouter_key_endpoint(req: OpenRouterKeyRequest):
+    if not req.key or not req.key.strip():
+        raise HTTPException(400, "API key is required")
+    set_openrouter_key(req.key.strip())
+    return {"status": "ok", "message": "OpenRouter API key updated"}
+
+
+@app.get("/api/openrouter/status")
+async def openrouter_status():
+    return {"configured": bool(OPENROUTER_API_KEY), "models_cached": len(_openrouter_models_cache["models"])}
 
 
 # ---------------------------------------------------------------------------

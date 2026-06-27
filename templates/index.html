@@ -542,6 +542,19 @@
             <label>Repeat Penalty</label>
             <input type="number" id="repPenalty" value="1.05" min="1" max="2" step="0.05">
         </div>
+        <div class="setting-item" style="flex:2;min-width:200px;">
+            <label>Model</label>
+            <select id="modelSelector" style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 8px;color:var(--text-primary);font-size:13px;outline:none;cursor:pointer;max-width:240px;">
+                <option value="local/default">Local (default)</option>
+            </select>
+        </div>
+        <div class="setting-item" style="flex:2;min-width:200px;display:none;" id="orKeyRow">
+            <label>OpenRouter Key</label>
+            <div style="display:flex;gap:6px;">
+                <input type="password" id="openrouterKey" placeholder="sk-or-..." style="flex:1;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 8px;color:var(--text-primary);font-size:13px;outline:none;">
+                <button class="btn" onclick="setOpenRouterKey()" style="padding:4px 10px;font-size:12px;" title="Apply key">Set</button>
+            </div>
+        </div>
         <div class="setting-item" style="justify-content:center;">
             <label>Voice Reply</label>
             <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;color:var(--text-primary);text-transform:none;letter-spacing:0;">
@@ -581,6 +594,8 @@
             audioChunks: [],
             audioContext: null,
             recorderInterval: null,
+            selectedModel: 'local/default',
+            modelsCache: { local: [], openrouter: [] },
         };
 
         // DOM refs
@@ -620,6 +635,112 @@
             state.messages = [];
             messagesEl.innerHTML = '';
             addMessage('system', 'Chat cleared. Start a new conversation!');
+        }
+
+        // Model selector change
+        document.addEventListener('DOMContentLoaded', () => {
+            const sel = document.getElementById('modelSelector');
+            if (sel) {
+                sel.addEventListener('change', () => {
+                    state.selectedModel = sel.value;
+                });
+            }
+        });
+
+        // Fetch available models from server
+        async function fetchAvailableModels() {
+            try {
+                const resp = await fetch('/api/available-models');
+                if (!resp.ok) return;
+                const data = await resp.json();
+                state.modelsCache = data;
+
+                const sel = document.getElementById('modelSelector');
+                if (!sel) return;
+
+                // Remember current selection
+                const currentVal = sel.value;
+
+                sel.innerHTML = '';
+
+                // Local models group
+                const localGroup = document.createElement('optgroup');
+                localGroup.label = '🔒 Local';
+                for (const m of (data.local || [])) {
+                    const opt = document.createElement('option');
+                    opt.value = m.id;
+                    opt.textContent = m.name;
+                    if (m.size_gb) opt.textContent += ` (${m.size_gb.toFixed(1)}G)`;
+                    localGroup.appendChild(opt);
+                }
+                sel.appendChild(localGroup);
+
+                // OpenRouter models group (if configured)
+                const orModels = data.openrouter || [];
+                if (orModels.length > 0) {
+                    const orGroup = document.createElement('optgroup');
+                    orGroup.label = '☁️ OpenRouter';
+                    for (const m of orModels) {
+                        const opt = document.createElement('option');
+                        opt.value = `openrouter/${m.id}`;
+                        opt.textContent = m.name || m.id;
+                        orGroup.appendChild(opt);
+                    }
+                    sel.appendChild(orGroup);
+                }
+
+                // Restore selection or default to local/default
+                if (currentVal && [...sel.options].some(o => o.value === currentVal)) {
+                    sel.value = currentVal;
+                } else {
+                    sel.value = 'local/default';
+                }
+                state.selectedModel = sel.value;
+
+                // Show/hide OR key input row
+                const orKeyRow = document.getElementById('orKeyRow');
+                if (orKeyRow) {
+                    orKeyRow.style.display = data.openrouter_configured ? 'none' : 'flex';
+                }
+
+                // Update badge with model info
+                const modelBadge = document.getElementById('modelBadge');
+                if (modelBadge) {
+                    const selected = sel.options[sel.selectedIndex];
+                    modelBadge.textContent = selected ? selected.textContent : '—';
+                }
+            } catch (e) {
+                console.warn('Failed to fetch models:', e);
+            }
+        }
+
+        // Set OpenRouter API key via backend API
+        async function setOpenRouterKey() {
+            const input = document.getElementById('openrouterKey');
+            const key = input.value.trim();
+            if (!key) {
+                showToast('Enter an OpenRouter API key', 'error');
+                return;
+            }
+            try {
+                const resp = await fetch('/api/openrouter/key', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ key }),
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({ detail: 'Failed' }));
+                    showToast(`Error: ${err.detail || 'Unknown'}`, 'error');
+                    return;
+                }
+                showToast('✅ OpenRouter key set! Fetching models...', 'success');
+                input.value = '';
+                document.getElementById('orKeyRow').style.display = 'none';
+                // Re-fetch models now that key is set
+                setTimeout(fetchAvailableModels, 500);
+            } catch (e) {
+                showToast('Network error setting key', 'error');
+            }
         }
 
         // Toast notification
@@ -692,11 +813,19 @@
         }
 
         // Update status
-        function updateStatus(online, model = '—') {
+        function updateStatus(online, serverModel = '—') {
             statusDot.className = `status-dot ${online ? 'online' : ''}`;
             statusText.textContent = online ? 'Online' : 'Offline';
-            modelBadge.textContent = model;
-            modelBadge.title = `Model: ${model}`;
+            // Show selected model from dropdown if available
+            const sel = document.getElementById('modelSelector');
+            if (sel && sel.selectedIndex >= 0) {
+                const selected = sel.options[sel.selectedIndex];
+                modelBadge.textContent = selected ? selected.textContent : serverModel;
+                modelBadge.title = selected ? `Model: ${selected.value}` : `Model: ${serverModel}`;
+            } else {
+                modelBadge.textContent = serverModel;
+                modelBadge.title = `Model: ${serverModel}`;
+            }
         }
 
         // Check health periodically
@@ -795,7 +924,7 @@
             showTyping();
 
             const body = JSON.stringify({
-                model: 'default',
+                model: state.selectedModel || 'default',
                 messages: messages,
                 stream: true,
                 ...params,
@@ -877,7 +1006,7 @@
             showTyping();
 
             const body = JSON.stringify({
-                model: 'default',
+                model: state.selectedModel || 'default',
                 messages: messages,
                 stream: false,
                 ...params,
@@ -1119,6 +1248,8 @@
         document.addEventListener('DOMContentLoaded', () => {
             checkHealth();
             setInterval(checkHealth, 15000);
+            fetchAvailableModels();
+            setInterval(fetchAvailableModels, 60000); // refresh model list every 60s
             promptInput.focus();
             createLevelBars();
         });
