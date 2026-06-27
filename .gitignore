@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual env
+.venv/
+venv/
+
+# Env files
+.env
+.env.*
+
+# Logs
+*.log
+
+# Models (large files — download separately!)
+models/*.gguf
+models/**/*.gguf
+models/whisper/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# llama.cpp binaries (download from https://github.com/ggerganov/llama.cpp/releases/tag/b9821)
+llama-cpp/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

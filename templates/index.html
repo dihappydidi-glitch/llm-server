@@ -1,0 +1,1127 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Server — Local Chat</title>
+    <style>
+        :root {
+            --bg-primary: #1a1b1e;
+            --bg-secondary: #25262b;
+            --bg-tertiary: #2c2e33;
+            --bg-hover: #373a40;
+            --text-primary: #c1c2c5;
+            --text-secondary: #909296;
+            --text-muted: #5c5f66;
+            --accent: #4c9aff;
+            --accent-hover: #3a8af0;
+            --accent-dim: rgba(76, 154, 255, 0.1);
+            --danger: #ff6b6b;
+            --success: #51cf66;
+            --border: #373a40;
+            --shadow: rgba(0,0,0,0.3);
+            --radius: 10px;
+            --radius-sm: 6px;
+            --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            --font-mono: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: var(--font);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* Header */
+        .header {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
+            gap: 12px;
+        }
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-width: 0;
+        }
+        .header-title {
+            font-size: 16px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .header-title .accent { color: var(--accent); }
+
+        .header-status {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+        .status-dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: var(--danger);
+            transition: background 0.3s;
+        }
+        .status-dot.online { background: var(--success); box-shadow: 0 0 6px var(--success); }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-shrink: 0;
+        }
+        .model-badge {
+            background: var(--bg-tertiary);
+            padding: 4px 10px;
+            border-radius: var(--radius-sm);
+            font-size: 12px;
+            color: var(--text-secondary);
+            font-family: var(--font-mono);
+            max-width: 240px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .btn {
+            background: var(--bg-tertiary);
+            border: none;
+            color: var(--text-primary);
+            padding: 6px 14px;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            font-size: 13px;
+            transition: background 0.15s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .btn:hover { background: var(--bg-hover); }
+        .btn-primary { background: var(--accent); color: #fff; }
+        .btn-primary:hover { background: var(--accent-hover); }
+        .btn-danger:hover { background: var(--danger); color: #fff; }
+        .btn-icon {
+            padding: 6px 8px;
+            font-size: 16px;
+            line-height: 1;
+        }
+
+        /* Chat area */
+        .chat-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px 0;
+            scroll-behavior: smooth;
+        }
+        .chat-container::-webkit-scrollbar {
+            width: 6px;
+        }
+        .chat-container::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .chat-container::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 3px;
+        }
+
+        .messages {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+
+        .message {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 20px;
+            animation: fadeIn 0.2s ease;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .message-avatar {
+            width: 34px; height: 34px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            font-size: 15px;
+        }
+        .message.user .message-avatar {
+            background: var(--accent-dim);
+            color: var(--accent);
+        }
+        .message.assistant .message-avatar {
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+        }
+        .message.system .message-avatar {
+            background: rgba(255, 193, 7, 0.1);
+            color: #ffc107;
+        }
+
+        .message-content {
+            flex: 1;
+            min-width: 0;
+        }
+        .message-header {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .message-body {
+            font-size: 14px;
+            line-height: 1.65;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .message-body p { margin-bottom: 8px; }
+        .message-body p:last-child { margin-bottom: 0; }
+        .message-body code {
+            background: var(--bg-tertiary);
+            padding: 1px 5px;
+            border-radius: 3px;
+            font-family: var(--font-mono);
+            font-size: 13px;
+        }
+        .message-body pre {
+            background: var(--bg-tertiary);
+            padding: 12px 16px;
+            border-radius: var(--radius-sm);
+            overflow-x: auto;
+            margin: 8px 0;
+            border: 1px solid var(--border);
+        }
+        .message-body pre code {
+            background: none;
+            padding: 0;
+        }
+
+        /* Typing indicator */
+        .typing {
+            display: flex;
+            gap: 4px;
+            padding: 4px 0;
+        }
+        .typing span {
+            width: 6px; height: 6px;
+            background: var(--text-muted);
+            border-radius: 50%;
+            animation: typing 1.4s infinite both;
+        }
+        .typing span:nth-child(2) { animation-delay: 0.2s; }
+        .typing span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes typing {
+            0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+            40% { opacity: 1; transform: scale(1); }
+        }
+
+        /* Input area */
+        .input-area {
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--border);
+            padding: 16px 20px;
+            flex-shrink: 0;
+        }
+        .input-wrapper {
+            max-width: 800px;
+            margin: 0 auto;
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+        }
+        .input-wrapper textarea {
+            flex: 1;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 12px 16px;
+            color: var(--text-primary);
+            font-family: var(--font);
+            font-size: 14px;
+            resize: none;
+            min-height: 48px;
+            max-height: 200px;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+        .input-wrapper textarea:focus {
+            border-color: var(--accent);
+        }
+        .input-wrapper textarea::placeholder {
+            color: var(--text-muted);
+        }
+        .input-wrapper button {
+            padding: 12px 24px;
+            height: 48px;
+            border: none;
+            border-radius: var(--radius);
+            background: var(--accent);
+            color: #fff;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.15s, opacity 0.15s;
+            white-space: nowrap;
+        }
+        .input-wrapper button:hover:not(:disabled) { background: var(--accent-hover); }
+        .input-wrapper button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .input-wrapper button.generating { background: var(--danger); }
+        .input-wrapper button.generating:hover { background: #e05555; }
+
+        /* System prompt bar */
+        .system-bar {
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border);
+            padding: 8px 20px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+        .system-bar label {
+            font-size: 12px;
+            color: var(--text-muted);
+            white-space: nowrap;
+        }
+        .system-bar input {
+            flex: 1;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 6px 10px;
+            color: var(--text-primary);
+            font-size: 12px;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+        .system-bar input:focus { border-color: var(--accent); }
+        .system-bar input::placeholder { color: var(--text-muted); }
+
+        /* Settings panel */
+        .settings-panel {
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border);
+            padding: 8px 20px;
+            display: none;
+            gap: 16px;
+            flex-wrap: wrap;
+            flex-shrink: 0;
+        }
+        .settings-panel.open { display: flex; }
+        .setting-item {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .setting-item label {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .setting-item input {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 4px 8px;
+            width: 80px;
+            color: var(--text-primary);
+            font-size: 13px;
+            outline: none;
+        }
+        .setting-item input:focus { border-color: var(--accent); }
+        .setting-item input[type="number"] { width: 70px; }
+
+        /* Voice — microphone button */
+        .mic-btn {
+            width: 48px; height: 48px;
+            border-radius: 50%;
+            border: 2px solid var(--border);
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+            font-size: 20px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+            flex-shrink: 0;
+            position: relative;
+        }
+        .mic-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+        .mic-btn.recording {
+            border-color: var(--danger);
+            background: rgba(255, 50, 50, 0.15);
+            color: var(--danger);
+            box-shadow: 0 0 16px rgba(255, 50, 50, 0.3);
+            animation: mic-pulse 1s ease-in-out infinite;
+        }
+        .mic-btn.recording::after {
+            content: '';
+            position: absolute;
+            inset: -4px;
+            border-radius: 50%;
+            border: 2px solid transparent;
+            border-top-color: var(--danger);
+            animation: mic-spin 0.8s linear infinite;
+        }
+        .mic-btn.processing {
+            border-color: var(--accent);
+            background: var(--accent-dim);
+            color: var(--accent);
+            pointer-events: none;
+        }
+        @keyframes mic-pulse {
+            0%, 100% { box-shadow: 0 0 8px rgba(255, 50, 50, 0.2); }
+            50% { box-shadow: 0 0 20px rgba(255, 50, 50, 0.5); }
+        }
+        @keyframes mic-spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Recording level visualizer */
+        .recording-level {
+            position: fixed;
+            bottom: 90px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: none;
+            align-items: center;
+            gap: 3px;
+            height: 30px;
+            padding: 4px 12px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--danger);
+            border-radius: 20px;
+            z-index: 50;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        .recording-level.active {
+            display: flex;
+            opacity: 1;
+        }
+        .recording-level .bar {
+            width: 3px;
+            background: var(--danger);
+            border-radius: 2px;
+            min-height: 4px;
+            transition: height 0.08s ease;
+        }
+
+        /* Audio player in messages */
+        .audio-player {
+            margin-top: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .audio-player audio {
+            height: 36px;
+            width: 240px;
+            border-radius: 6px;
+        }
+        .audio-player audio::-webkit-media-controls-panel {
+            background: var(--bg-tertiary);
+        }
+        .audio-player .play-btn {
+            width: 32px; height: 32px;
+            border-radius: 50%;
+            border: 1px solid var(--border);
+            background: var(--accent-dim);
+            color: var(--accent);
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.15s;
+        }
+        .audio-player .play-btn:hover { background: var(--accent); color: #fff; }
+
+        .voice-badge {
+            font-size: 11px;
+            color: var(--text-muted);
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            margin-left: 4px;
+        }
+
+        /* Toast / notifications */
+        .toast {
+            position: fixed;
+            bottom: 100px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            padding: 10px 20px;
+            border-radius: var(--radius);
+            font-size: 13px;
+            color: var(--text-primary);
+            box-shadow: 0 4px 20px var(--shadow);
+            animation: fadeIn 0.2s ease;
+            z-index: 100;
+        }
+        .toast.error { border-color: var(--danger); }
+        .toast.success { border-color: var(--success); }
+
+        /* Responsive */
+        @media (max-width: 640px) {
+            .header { padding: 10px 12px; flex-wrap: wrap; }
+            .model-badge { max-width: 140px; }
+            .messages { padding: 0 12px; }
+            .input-area { padding: 12px; }
+            .input-wrapper button { padding: 12px 16px; }
+            .settings-panel { gap: 10px; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <div class="header">
+        <div class="header-left">
+            <div class="header-title"><span class="accent">LLM</span> Server</div>
+            <div class="header-status">
+                <span class="status-dot" id="statusDot"></span>
+                <span id="statusText">connecting...</span>
+            </div>
+        </div>
+        <div class="header-right">
+            <span class="model-badge" id="modelBadge" title="Current model">—</span>
+            <button class="btn btn-icon" onclick="toggleSettings()" title="Settings">⚙️</button>
+            <button class="btn btn-icon" onclick="clearChat()" title="Clear chat">🗑️</button>
+        </div>
+    </div>
+
+    <!-- System prompt -->
+    <div class="system-bar">
+        <label>System</label>
+        <input type="text" id="systemPrompt" placeholder="System prompt (optional)" value="You are a helpful AI assistant.">
+    </div>
+
+    <!-- Settings panel -->
+    <div class="settings-panel" id="settingsPanel">
+        <div class="setting-item">
+            <label>Temperature</label>
+            <input type="number" id="temperature" value="0.7" min="0" max="2" step="0.05">
+        </div>
+        <div class="setting-item">
+            <label>Max Tokens</label>
+            <input type="number" id="maxTokens" value="1024" min="1" max="8192" step="1">
+        </div>
+        <div class="setting-item">
+            <label>Top P</label>
+            <input type="number" id="topP" value="0.9" min="0" max="1" step="0.05">
+        </div>
+        <div class="setting-item">
+            <label>Top K</label>
+            <input type="number" id="topK" value="40" min="0" max="200" step="1">
+        </div>
+        <div class="setting-item">
+            <label>Repeat Penalty</label>
+            <input type="number" id="repPenalty" value="1.05" min="1" max="2" step="0.05">
+        </div>
+        <div class="setting-item" style="justify-content:center;">
+            <label>Voice Reply</label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;color:var(--text-primary);text-transform:none;letter-spacing:0;">
+                <input type="checkbox" id="voiceToggle" checked>
+                🔊 TTS
+            </label>
+        </div>
+    </div>
+
+    <!-- Recording level visualizer -->
+    <div class="recording-level" id="recordingLevel"></div>
+
+    <!-- Chat messages -->
+    <div class="chat-container" id="chatContainer">
+        <div class="messages" id="messages"></div>
+    </div>
+
+    <!-- Input -->
+    <div class="input-area">
+        <div class="input-wrapper">
+            <textarea id="promptInput" rows="1" placeholder="Type a message or press 🎤 for voice..."
+                      onkeydown="handleKeydown(event)" oninput="autoResize(this)"></textarea>
+            <button id="micBtn" class="mic-btn" onclick="toggleRecording()" title="Voice input">🎤</button>
+            <button id="sendBtn" onclick="sendMessage()">Send</button>
+        </div>
+    </div>
+
+    <script>
+        // State
+        const state = {
+            generating: false,
+            streaming: true,
+            messages: [],
+            recording: false,
+            voiceEnabled: true,
+            mediaRecorder: null,
+            audioChunks: [],
+            audioContext: null,
+            recorderInterval: null,
+        };
+
+        // DOM refs
+        const messagesEl = document.getElementById('messages');
+        const chatContainer = document.getElementById('chatContainer');
+        const promptInput = document.getElementById('promptInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const micBtn = document.getElementById('micBtn');
+        const statusDot = document.getElementById('statusDot');
+        const statusText = document.getElementById('statusText');
+        const modelBadge = document.getElementById('modelBadge');
+        const recordingLevel = document.getElementById('recordingLevel');
+        const voiceToggle = document.getElementById('voiceToggle');
+
+        // Auto-resize textarea
+        function autoResize(el) {
+            el.style.height = 'auto';
+            el.style.height = Math.min(el.scrollHeight, 200) + 'px';
+        }
+
+        // Handle Enter key
+        function handleKeydown(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        }
+
+        // Toggle settings
+        function toggleSettings() {
+            document.getElementById('settingsPanel').classList.toggle('open');
+        }
+
+        // Clear chat
+        function clearChat() {
+            if (state.generating) return;
+            state.messages = [];
+            messagesEl.innerHTML = '';
+            addMessage('system', 'Chat cleared. Start a new conversation!');
+        }
+
+        // Toast notification
+        function showToast(msg, type = '') {
+            const existing = document.querySelector('.toast');
+            if (existing) existing.remove();
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.textContent = msg;
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 3000);
+        }
+
+        // Add message to chat
+        function addMessage(role, content) {
+            const msgDiv = document.createElement('div');
+            msgDiv.className = `message ${role}`;
+
+            const icons = { user: '👤', assistant: '🤖', system: 'ℹ️' };
+
+            msgDiv.innerHTML = `
+                <div class="message-avatar">${icons[role] || '?'}</div>
+                <div class="message-content">
+                    <div class="message-header">${role}</div>
+                    <div class="message-body">${escapeHtml(content)}</div>
+                </div>
+            `;
+
+            messagesEl.appendChild(msgDiv);
+            scrollToBottom();
+            return msgDiv;
+        }
+
+        // Escape HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Scroll to bottom
+        function scrollToBottom() {
+            setTimeout(() => {
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+            }, 50);
+        }
+
+        // Show typing indicator
+        function showTyping() {
+            const div = document.createElement('div');
+            div.className = 'message assistant';
+            div.id = 'typingIndicator';
+            div.innerHTML = `
+                <div class="message-avatar">🤖</div>
+                <div class="message-content">
+                    <div class="message-header">assistant</div>
+                    <div class="message-body">
+                        <div class="typing"><span></span><span></span><span></span></div>
+                    </div>
+                </div>
+            `;
+            messagesEl.appendChild(div);
+            scrollToBottom();
+        }
+
+        // Remove typing indicator
+        function removeTyping() {
+            const el = document.getElementById('typingIndicator');
+            if (el) el.remove();
+        }
+
+        // Update status
+        function updateStatus(online, model = '—') {
+            statusDot.className = `status-dot ${online ? 'online' : ''}`;
+            statusText.textContent = online ? 'Online' : 'Offline';
+            modelBadge.textContent = model;
+            modelBadge.title = `Model: ${model}`;
+        }
+
+        // Check health periodically
+        async function checkHealth() {
+            try {
+                const resp = await fetch('/api/health');
+                const data = await resp.json();
+                const ok = data.status === 'ok';
+                updateStatus(ok, data.model || '—');
+                if (!ok && state.messages.length === 0) {
+                    addMessage('system', '⚠️ Model not loaded. The server is running but no model is loaded yet.');
+                }
+            } catch (e) {
+                updateStatus(false);
+            }
+        }
+
+        // Build messages array for /v1/chat/completions
+        function buildMessages(userText) {
+            const msgs = [];
+            const systemPrompt = document.getElementById('systemPrompt').value.trim();
+            if (systemPrompt) {
+                msgs.push({ role: 'system', content: systemPrompt });
+            }
+            // Add conversation history
+            for (const m of state.messages) {
+                msgs.push({ role: m.role, content: m.content });
+            }
+            // Add new user message
+            msgs.push({ role: 'user', content: userText });
+            return msgs;
+        }
+
+        // Get generation params from settings panel
+        function getGenerationParams() {
+            return {
+                max_tokens: parseInt(document.getElementById('maxTokens').value) || 1024,
+                temperature: parseFloat(document.getElementById('temperature').value) || 0.7,
+                top_p: parseFloat(document.getElementById('topP').value) || 0.9,
+                top_k: parseInt(document.getElementById('topK').value) || 40,
+                repetition_penalty: parseFloat(document.getElementById('repPenalty').value) || 1.05,
+            };
+        }
+
+        // Send message
+        async function sendMessage() {
+            if (state.generating) {
+                // Stop generation
+                state.generating = false;
+                sendBtn.textContent = 'Send';
+                sendBtn.classList.remove('generating');
+                removeTyping();
+                promptInput.disabled = false;
+                return;
+            }
+
+            const prompt = promptInput.value.trim();
+            if (!prompt) return;
+
+            // Show user message
+            addMessage('user', prompt);
+            state.messages.push({ role: 'user', content: prompt });
+            promptInput.value = '';
+            promptInput.style.height = 'auto';
+
+            // Set generating state
+            state.generating = true;
+            sendBtn.textContent = 'Stop';
+            sendBtn.classList.add('generating');
+            promptInput.disabled = true;
+
+            const messages = buildMessages(prompt);
+            const params = getGenerationParams();
+
+            try {
+                if (state.streaming) {
+                    await streamResponse(messages, params);
+                } else {
+                    await generateResponse(messages, params);
+                }
+            } catch (e) {
+                removeTyping();
+                addMessage('system', `❌ Error: ${e.message || 'Connection failed'}`);
+                showToast('Connection error', 'error');
+            }
+
+            state.generating = false;
+            sendBtn.textContent = 'Send';
+            sendBtn.classList.remove('generating');
+            promptInput.disabled = false;
+            promptInput.focus();
+        }
+
+        // Streaming response — /v1/chat/completions with SSE
+        async function streamResponse(messages, params) {
+            showTyping();
+
+            const body = JSON.stringify({
+                model: 'default',
+                messages: messages,
+                stream: true,
+                ...params,
+            });
+
+            const resp = await fetch('/v1/chat/completions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: body,
+            });
+
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+                removeTyping();
+                addMessage('system', `❌ Error: ${err.detail || resp.statusText}`);
+                return;
+            }
+
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let fullText = '';
+            let firstChunk = true;
+            let buffer = '';
+            let doneStream = false;
+
+            while (state.generating && !doneStream) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || ''; // keep incomplete line
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        const data = line.slice(6).trim();
+                        if (data === '[DONE]') {
+                            doneStream = true;
+                            break;
+                        }
+                        try {
+                            const parsed = JSON.parse(data);
+                            const content = parsed.choices?.[0]?.delta?.content || '';
+                            if (content) {
+                                fullText += content;
+
+                                if (firstChunk) {
+                                    removeTyping();
+                                    addMessage('assistant', fullText);
+                                    firstChunk = false;
+                                } else {
+                                    const lastMsg = messagesEl.lastElementChild;
+                                    if (lastMsg && lastMsg.classList.contains('assistant')) {
+                                        const bodyEl = lastMsg.querySelector('.message-body');
+                                        if (bodyEl) bodyEl.textContent = fullText;
+                                    }
+                                }
+                                scrollToBottom();
+                            }
+                        } catch (e) {
+                            // Skip malformed JSON lines
+                        }
+                    }
+                }
+            }
+
+            if (firstChunk) {
+                removeTyping();
+                addMessage('assistant', fullText || '(empty response)');
+            }
+
+            if (fullText) {
+                state.messages.push({ role: 'assistant', content: fullText });
+            }
+        }
+
+        // Non-streaming response — /v1/chat/completions
+        async function generateResponse(messages, params) {
+            showTyping();
+
+            const body = JSON.stringify({
+                model: 'default',
+                messages: messages,
+                stream: false,
+                ...params,
+            });
+
+            const resp = await fetch('/v1/chat/completions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: body,
+            });
+
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+                removeTyping();
+                addMessage('system', `❌ Error: ${err.detail || resp.statusText}`);
+                return;
+            }
+
+            const data = await resp.json();
+            const content = data.choices?.[0]?.message?.content || '(empty response)';
+            removeTyping();
+            addMessage('assistant', content);
+            state.messages.push({ role: 'assistant', content: content });
+        }
+
+        // ============================================================
+        // Voice recording (MediaRecorder API)
+        // ============================================================
+
+        function createLevelBars() {
+            recordingLevel.innerHTML = '';
+            for (let i = 0; i < 30; i++) {
+                const bar = document.createElement('div');
+                bar.className = 'bar';
+                recordingLevel.appendChild(bar);
+            }
+        }
+
+        function updateLevelBars(level) {
+            const bars = recordingLevel.querySelectorAll('.bar');
+            const activeCount = Math.round((level / 100) * bars.length);
+            bars.forEach((bar, i) => {
+                const h = i < activeCount ? 4 + Math.random() * 20 : 4;
+                bar.style.height = h + 'px';
+            });
+        }
+
+        async function toggleRecording() {
+            if (state.recording) {
+                stopRecording();
+                return;
+            }
+            await startRecording();
+        }
+
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                state.recording = true;
+                state.audioChunks = [];
+                micBtn.textContent = '⏹️';
+                micBtn.classList.add('recording');
+                createLevelBars();
+                recordingLevel.classList.add('active');
+
+                // Audio level visualization
+                try {
+                    state.audioContext = new AudioContext();
+                    const source = state.audioContext.createMediaStreamSource(stream);
+                    const analyser = state.audioContext.createAnalyser();
+                    analyser.fftSize = 256;
+                    source.connect(analyser);
+                    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+                    state.recorderInterval = setInterval(() => {
+                        analyser.getByteFrequencyData(dataArray);
+                        const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+                        updateLevelBars(Math.min(100, avg * 2));
+                    }, 80);
+                } catch (e) {
+                    console.warn('Level meter unavailable:', e);
+                }
+
+                // MediaRecorder
+                const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+                    ? 'audio/webm;codecs=opus'
+                    : 'audio/webm';
+
+                state.mediaRecorder = new MediaRecorder(stream, { mimeType });
+                state.mediaRecorder.ondataavailable = (e) => {
+                    if (e.data.size > 0) state.audioChunks.push(e.data);
+                };
+                state.mediaRecorder.onstop = () => {
+                    // Stop tracks
+                    stream.getTracks().forEach(t => t.stop());
+                    if (state.audioContext) {
+                        state.audioContext.close();
+                        state.audioContext = null;
+                    }
+                    clearInterval(state.recorderInterval);
+
+                    // Process audio
+                    const blob = new Blob(state.audioChunks, { type: mimeType });
+                    if (blob.size > 100) {
+                        transcribeAudio(blob);
+                    } else {
+                        showToast('Recording too short', 'error');
+                    }
+                };
+
+                state.mediaRecorder.start();
+                showToast('Recording... speak now', '');
+
+            } catch (e) {
+                state.recording = false;
+                micBtn.textContent = '🎤';
+                micBtn.classList.remove('recording');
+                recordingLevel.classList.remove('active');
+                showToast('Microphone access denied', 'error');
+                console.error('Mic error:', e);
+            }
+        }
+
+        function stopRecording() {
+            if (state.mediaRecorder && state.mediaRecorder.state !== 'inactive') {
+                state.mediaRecorder.stop();
+            }
+            state.recording = false;
+            micBtn.textContent = '🎤';
+            micBtn.classList.remove('recording');
+            micBtn.classList.add('processing');
+            recordingLevel.classList.remove('active');
+        }
+
+        async function transcribeAudio(blob) {
+            showToast('Transcribing...', '');
+
+            try {
+                const resp = await fetch('/api/stt', {
+                    method: 'POST',
+                    body: blob,
+                });
+
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+                    showToast(`STT error: ${err.detail || resp.statusText}`, 'error');
+                    micBtn.classList.remove('processing');
+                    return;
+                }
+
+                const data = await resp.json();
+                const text = (data.text || '').trim();
+
+                micBtn.classList.remove('processing');
+
+                if (text) {
+                    promptInput.value = text;
+                    promptInput.style.height = 'auto';
+                    promptInput.style.height = Math.min(promptInput.scrollHeight, 200) + 'px';
+                    showToast(`✅ "${text.slice(0, 50)}${text.length > 50 ? '...' : ''}"`, 'success');
+                    // Auto-send after short delay
+                    setTimeout(() => sendMessage(), 300);
+                } else {
+                    showToast('No speech detected', 'error');
+                }
+            } catch (e) {
+                micBtn.classList.remove('processing');
+                showToast('Transcription failed', 'error');
+            }
+        }
+
+        // ============================================================
+        // TTS playback
+        // ============================================================
+
+        async function playTTS(text) {
+            if (!state.voiceEnabled && !voiceToggle.checked) return;
+
+            try {
+                const resp = await fetch('/api/tts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: text }),
+                });
+
+                if (!resp.ok) return;
+
+                const blob = await resp.blob();
+                const url = URL.createObjectURL(blob);
+
+                // Find the last assistant message and add audio player
+                const msgs = messagesEl.querySelectorAll('.message.assistant');
+                const lastMsg = msgs[msgs.length - 1];
+                if (lastMsg) {
+                    const content = lastMsg.querySelector('.message-content');
+                    if (content) {
+                        const existing = content.querySelector('.audio-player');
+                        if (existing) existing.remove();
+
+                        const playerDiv = document.createElement('div');
+                        playerDiv.className = 'audio-player';
+                        playerDiv.innerHTML = `
+                            <audio controls autoplay style="height:36px;width:240px;border-radius:6px;">
+                                <source src="${url}" type="audio/mpeg">
+                            </audio>
+                            <span class="voice-badge">🔊 TTS</span>
+                        `;
+                        content.appendChild(playerDiv);
+
+                        // Auto-remove after playback
+                        const audio = playerDiv.querySelector('audio');
+                        audio.onended = () => {
+                            setTimeout(() => {
+                                URL.revokeObjectURL(url);
+                                playerDiv.remove();
+                            }, 2000);
+                        };
+                    }
+                }
+            } catch (e) {
+                console.warn('TTS playback error:', e);
+            }
+        }
+
+        // Patch addMessage to auto-play TTS for assistant messages
+        const _origAddMessage = addMessage;
+        addMessage = function(role, content) {
+            const msgDiv = _origAddMessage(role, content);
+            if (role === 'assistant' && content && !content.startsWith('(') && voiceToggle.checked) {
+                playTTS(content);
+            }
+            return msgDiv;
+        };
+
+        // Welcome message
+        addMessage('system', '🤖 Welcome! Press 🎤 for voice input.');
+
+        // Init
+        document.addEventListener('DOMContentLoaded', () => {
+            checkHealth();
+            setInterval(checkHealth, 15000);
+            promptInput.focus();
+            createLevelBars();
+        });
+    </script>
+</body>
+</html>
